@@ -34,22 +34,23 @@ npm install
 pip install -r requirements.txt
 ```
 
-3. Configure AWS credentials:
+3. Configure AWS credentials (choose one method):
    
-   **Option A: Using AWS CLI (Recommended)**
+   **Method 1: AWS CLI (Recommended)**
    ```bash
    aws configure
    ```
-   Enter your:
-   - AWS Access Key ID
-   - AWS Secret Access Key
-   - Default region (e.g., `us-east-1`)
-   - Default output format (e.g., `json`)
+   Enter your AWS Access Key ID, Secret Access Key, and region.
+   This will store credentials in `~/.aws/credentials` and `~/.aws/config`
    
-   **Option B: Using Environment Variables**
+   **Method 2: IAM Role** (if running on EC2/ECS/Lambda)
+   - Attach an IAM role with necessary permissions
+   - Credentials are automatically available
+   
+   **Method 3: Environment Variables** (not recommended, but supported)
    ```bash
-   export AWS_ACCESS_KEY_ID=your_access_key
-   export AWS_SECRET_ACCESS_KEY=your_secret_key
+   export AWS_ACCESS_KEY_ID=your-key
+   export AWS_SECRET_ACCESS_KEY=your-secret
    export AWS_DEFAULT_REGION=us-east-1
    ```
    
@@ -72,9 +73,14 @@ pip install -r requirements.txt
          "Effect": "Allow",
          "Action": [
            "s3:PutObject",
-           "s3:GetObject"
+           "s3:GetObject",
+           "s3:DeleteObject",
+           "s3:ListBucket"
          ],
-         "Resource": "arn:aws:s3:::your-bucket-name/*"
+         "Resource": [
+           "arn:aws:s3:::your-bucket-name",
+           "arn:aws:s3:::your-bucket-name/*"
+         ]
        },
        {
          "Effect": "Allow",
@@ -94,41 +100,39 @@ pip install -r requirements.txt
    2. Request access to "Anthropic Claude 3 Sonnet" (or update model ID in code)
    3. Wait for approval (usually instant)
    4. Uses IAM authentication (no API key needed - same credentials as Transcribe/S3)
-
-4. Configure AWS credentials (choose one method):
    
-   **Method 1: AWS CLI (Recommended)**
+   **For AWS SSO users**: If you see "invalid security token" errors, refresh your SSO session:
    ```bash
-   aws configure
+   aws sso login
    ```
-   Enter your AWS Access Key ID, Secret Access Key, and region.
-   This will store credentials in `~/.aws/credentials` and `~/.aws/config`
-   
-   **Method 2: IAM Role** (if running on EC2/ECS/Lambda)
-   - Attach an IAM role with necessary permissions
-   - Credentials are automatically available
-   
-   **Method 3: Environment Variables** (not recommended, but supported)
-   ```bash
-   export AWS_ACCESS_KEY_ID=your-key
-   export AWS_SECRET_ACCESS_KEY=your-secret
-   export AWS_DEFAULT_REGION=us-east-1
-   ```
+   Or run `aws sts get-caller-identity` to refresh credentials
 
-5. Create `.env` file in the backend directory:
+4. Create `.env` file in the backend directory:
 ```
+# Required
 AWS_REGION=us-east-1
 S3_BUCKET_NAME=your-bucket-name
-USE_BEDROCK=true  # Optional: Use AWS Bedrock for better action item extraction
 
-# Bedrock API Key (optional - only for Bedrock, IAM auth used for signing)
-AWS_BEDROCK_API_KEY=your-bedrock-api-key-here
+# Optional - Bedrock Configuration
+USE_BEDROCK=true  # Use AWS Bedrock for better action item extraction (default: false)
+AWS_BEDROCK_API_KEY=your-bedrock-api-key-here  # Optional - only for Bedrock, IAM auth used for signing
+
+# Optional - Storage Configuration
+STORE_IN_S3=true              # Store transcriptions in S3 (default: true)
+SKIP_LOCAL_STORAGE=true       # Skip local uploads folder (default: true)
+
+# Optional - DynamoDB Configuration (for fast metadata queries)
+USE_DYNAMODB=false            # Use DynamoDB for fast queries (default: false)
+DYNAMODB_TABLE_NAME=meeting-metadata  # DynamoDB table name (created automatically if permissions allow)
+
+# Optional - AWS Profile
+AWS_PROFILE=default           # Use specific AWS profile (default: uses default credential chain)
 ```
 
 **Important**: AWS Transcribe requires audio/video files to be stored in S3. You must:
 - Create an S3 bucket (or use an existing one)
 - Set the `S3_BUCKET_NAME` environment variable
-- Ensure your IAM user/role has `s3:PutObject` and `s3:GetObject` permissions for the bucket
+- Ensure your IAM user/role has `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:ListBucket` permissions for the bucket
 
 **Optional - AWS Bedrock for Better Extraction**:
 - Set `USE_BEDROCK=true` to use AWS Bedrock (Claude) for action item extraction
@@ -137,11 +141,6 @@ AWS_BEDROCK_API_KEY=your-bedrock-api-key-here
   - **IAM Auth**: Uses default AWS credential chain (AWS CLI `aws configure`, IAM roles, SSO, etc.)
     - No environment variables needed for IAM
     - Configure using `aws configure` or IAM role
-    - **For AWS SSO users**: If you see "invalid security token" errors, refresh your SSO session:
-      ```bash
-      aws sso login
-      ```
-      Or run `aws sts get-caller-identity` to refresh credentials
   - **Bedrock API Key**: Set `AWS_BEDROCK_API_KEY` in `.env` (optional)
     - Get your API key from AWS Bedrock console → API keys
     - The API key is used specifically for Bedrock authorization
@@ -153,6 +152,8 @@ AWS_BEDROCK_API_KEY=your-bedrock-api-key-here
   2. Request access to "Anthropic Claude 3 Sonnet" (or other Claude models)
   3. Wait for approval (usually instant for most accounts)
 
+**Storage Architecture**: For detailed information about the S3 storage structure and architecture, see [S3_ARCHITECTURE.md](./S3_ARCHITECTURE.md) and [S3_RECOMMENDATIONS.md](./S3_RECOMMENDATIONS.md).
+
 ### Running the Application
 
 1. Start the backend server:
@@ -160,6 +161,11 @@ AWS_BEDROCK_API_KEY=your-bedrock-api-key-here
 cd backend
 python app.py
 ```
+   Or use the provided script:
+   ```bash
+   cd backend
+   ./run.sh
+   ```
    The backend will run on `http://localhost:5000`
 
 2. Start the frontend (in a new terminal):
@@ -172,33 +178,43 @@ npm run dev
 
 ## Usage
 
-### Text Input Mode
-1. Select **"Text Input Mode"** tab
-2. Paste or type text into the input field
-3. Click **"Parse Text"** to extract structured information
-4. View the structured output and before/after comparison
+### Meeting Analysis Workflow
 
-### Meeting Mode
-1. Select **"Meeting Mode"** tab
-2. **Option A: Upload Audio/Video File**
+1. **Upload Audio/Video File** (Option A)
    - Drag and drop or click to upload a meeting recording (MP3, WAV, M4A, MP4, etc.)
-   - The file will be uploaded and transcription will start automatically
+   - The file will be uploaded to S3 and transcription will start automatically
    - Use the audio player to listen to the recording
+   - Wait for transcription to complete (status indicator will show progress)
    
-3. **Option B: Paste Transcript**
+2. **Paste Transcript** (Option B)
    - Paste a meeting transcript directly into the text area
+   - Skip the transcription step
    
-4. Click **"Process Meeting & Generate Requirements"**
-5. View:
+3. **Process Meeting**
+   - Click **"Process Meeting & Generate Requirements"** button
+   - The system will extract structured information using Bedrock (if enabled) or regex-based extraction
+   
+4. **View Results**
    - **Meeting Summary**: Overview, participants, topics, decisions, action items
    - **Structured Requirements**: Automatically mapped requirements with IDs, priorities, acceptance criteria
-   - **Before/After Comparison**: Original vs processed text
+   - **Transcribed Text**: Full transcription of the meeting
 
-### Audio Transcription Mode (Text Input Mode)
-1. For audio files, upload to S3 first or use the file upload in Meeting Mode
-2. Provide the S3 URI in the `audio_url` field
-3. Click **"Transcribe & Parse"** to process
-4. The system will poll for transcription completion and display results
+### API Endpoints
+
+The backend provides the following REST API endpoints:
+
+- `POST /api/upload` - Upload audio/video file to S3
+- `POST /api/transcribe` - Start transcription job or process text directly
+- `GET /api/transcribe/status/<job_name>` - Get transcription job status
+- `POST /api/meeting/process` - Process meeting text and generate summary/requirements
+- `GET /api/files/<filename>` - Get local file or S3 presigned URL
+- `GET /api/files/s3?key=<s3_key>` - Get presigned URL for S3 file
+- `GET /api/meetings` - List all stored meetings
+- `GET /api/meetings/<meeting_id>` - Retrieve specific meeting data
+- `DELETE /api/meetings/<meeting_id>` - Delete meeting and all associated data
+- `GET /health` - Health check endpoint
+
+For detailed API documentation, see [S3_ARCHITECTURE.md](./S3_ARCHITECTURE.md).
 
 ## Features Explained
 

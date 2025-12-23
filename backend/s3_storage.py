@@ -6,9 +6,12 @@ import boto3
 import json
 import os
 import uuid
+import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
 
 # Initialize S3 client
 s3_client = boto3.client(
@@ -25,7 +28,7 @@ try:
     DYNAMODB_TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME', 'meeting-metadata')
     USE_DYNAMODB = os.getenv('USE_DYNAMODB', 'false').lower() == 'true'
 except Exception as e:
-    print(f"DynamoDB not available: {e}")
+    logger.warning(f"DynamoDB not available: {e}")
     USE_DYNAMODB = False
 
 def get_bucket_name() -> str:
@@ -146,7 +149,7 @@ def store_meeting_data(
         try:
             store_meeting_metadata_dynamodb(meeting_id, metadata, audio_s3_key)
         except Exception as e:
-            print(f"Warning: Failed to store in DynamoDB: {e}")
+            logger.warning(f"Failed to store in DynamoDB: {e}")
     
     return {
         'meeting_id': meeting_id,
@@ -223,7 +226,7 @@ def list_meetings(limit: int = 50) -> List[Dict[str, Any]]:
             response = table.scan(Limit=limit)
             return response.get('Items', [])
         except Exception as e:
-            print(f"Warning: DynamoDB query failed, falling back to S3: {e}")
+            logger.warning(f"DynamoDB query failed, falling back to S3: {e}")
     
     # Fallback: List from S3 (slower but works without DynamoDB)
     prefix = "transcriptions/"
@@ -302,7 +305,7 @@ def store_meeting_metadata_dynamodb(
         table.put_item(Item=item)
     except ClientError as e:
         if e.response['Error']['Code'] == 'ResourceNotFoundException':
-            print(f"DynamoDB table {DYNAMODB_TABLE_NAME} does not exist. Create it manually or grant table creation permissions.")
+            logger.warning(f"DynamoDB table {DYNAMODB_TABLE_NAME} does not exist. Create it manually or grant table creation permissions.")
         else:
             raise
 
@@ -338,5 +341,5 @@ def delete_meeting_data(meeting_id: str):
             table = dynamodb.Table(DYNAMODB_TABLE_NAME)
             table.delete_item(Key={'meeting_id': meeting_id})
         except Exception as e:
-            print(f"Warning: Failed to delete from DynamoDB: {e}")
+            logger.warning(f"Failed to delete from DynamoDB: {e}")
 

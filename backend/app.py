@@ -5,6 +5,7 @@ import os
 import json
 import uuid
 import sys
+import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
@@ -19,10 +20,17 @@ from s3_storage import (
 )
 import tempfile
 
-# Force stdout to be unbuffered so prints show immediately
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
-
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -51,21 +59,19 @@ s3_client = boto3.client(
 
 @app.route('/health', methods=['GET'])
 def health():
-    print("Health check endpoint called", flush=True)
-    sys.stdout.flush()
+    logger.info("Health check endpoint called")
     return jsonify({'status': 'healthy'}), 200
 
 @app.route('/api/test', methods=['GET', 'POST'])
 def test():
     """Test endpoint to verify server is running and logging works"""
-    print("=" * 50, flush=True)
-    print("TEST ENDPOINT CALLED", flush=True)
-    print(f"Method: {request.method}", flush=True)
-    print(f"Headers: {dict(request.headers)}", flush=True)
+    logger.info("=" * 50)
+    logger.info("TEST ENDPOINT CALLED")
+    logger.info(f"Method: {request.method}")
+    logger.debug(f"Headers: {dict(request.headers)}")
     if request.is_json:
-        print(f"JSON data: {request.json}", flush=True)
-    print("=" * 50, flush=True)
-    sys.stdout.flush()
+        logger.debug(f"JSON data: {request.json}")
+    logger.info("=" * 50)
     return jsonify({
         'status': 'success',
         'message': 'Server is running and logging works!',
@@ -309,16 +315,14 @@ def process_meeting():
     """
     Process meeting transcription and generate summary + requirements
     """
-    print("=" * 50, flush=True)
-    print("MEETING PROCESS ENDPOINT CALLED", flush=True)
-    print("=" * 50, flush=True)
-    sys.stdout.flush()
+    logger.info("=" * 50)
+    logger.info("MEETING PROCESS ENDPOINT CALLED")
+    logger.info("=" * 50)
     try:
         data = request.json
-        print(f"Received data keys: {list(data.keys()) if data else 'None'}", flush=True)
+        logger.debug(f"Received data keys: {list(data.keys()) if data else 'None'}")
         text = data.get('text', '')
-        print(f"Text length: {len(text)} characters", flush=True)
-        sys.stdout.flush()
+        logger.info(f"Text length: {len(text)} characters")
         
         # Check which extraction method to use (Bedrock or Regex)
         # Priority: 1) Request parameter, 2) Environment variable, 3) Check if API key exists
@@ -342,16 +346,15 @@ def process_meeting():
         elif bedrock_api_key:
             # Auto-enable Bedrock if API key is available
             use_bedrock = True
-            print("Auto-enabling Bedrock: API key detected", flush=True)
+            logger.info("Auto-enabling Bedrock: API key detected")
         else:
             use_bedrock = False
         
-        print(f"USE_BEDROCK env var: {os.getenv('USE_BEDROCK')}", flush=True)
-        print(f"USE_BEDROCK from request: {use_bedrock_request}", flush=True)
-        print(f"Bedrock API key present: {bool(bedrock_api_key)}", flush=True)
-        print(f"IAM credentials from default chain: {has_iam_creds}", flush=True)
-        print(f"Final decision - Using Bedrock: {use_bedrock}", flush=True)
-        sys.stdout.flush()
+        logger.debug(f"USE_BEDROCK env var: {os.getenv('USE_BEDROCK')}")
+        logger.debug(f"USE_BEDROCK from request: {use_bedrock_request}")
+        logger.debug(f"Bedrock API key present: {bool(bedrock_api_key)}")
+        logger.debug(f"IAM credentials from default chain: {has_iam_creds}")
+        logger.info(f"Final decision - Using Bedrock: {use_bedrock}")
         if not text:
             return jsonify({'error': 'Text is required'}), 400
         
@@ -363,14 +366,13 @@ def process_meeting():
         
         extraction_method = 'bedrock' if bedrock_used else 'regex'
         
-        print(f"Extraction completed using: {extraction_method}", flush=True)
+        logger.info(f"Extraction completed using: {extraction_method}")
         if bedrock_error:
-            print(f"Bedrock error: {bedrock_error}", flush=True)
-        print(f"Meeting summary keys: {list(meeting_data.keys()) if meeting_data else 'None'}", flush=True)
-        print(f"Number of action items: {len(meeting_data.get('action_items', []))}", flush=True)
-        print(f"Number of requirements: {len(requirements)}", flush=True)
-        print("=" * 50, flush=True)
-        sys.stdout.flush()
+            logger.warning(f"Bedrock error: {bedrock_error}")
+        logger.debug(f"Meeting summary keys: {list(meeting_data.keys()) if meeting_data else 'None'}")
+        logger.info(f"Number of action items: {len(meeting_data.get('action_items', []))}")
+        logger.info(f"Number of requirements: {len(requirements)}")
+        logger.info("=" * 50)
         
         # Store in S3 if audio S3 key is provided
         meeting_id = None
@@ -394,9 +396,9 @@ def process_meeting():
                     requirements=requirements,
                     metadata=metadata
                 )
-                print(f"Meeting data stored in S3 with ID: {meeting_id}", flush=True)
+                logger.info(f"Meeting data stored in S3 with ID: {meeting_id}")
             except Exception as e:
-                print(f"Warning: Failed to store in S3: {e}", flush=True)
+                logger.warning(f"Failed to store in S3: {e}")
                 # Continue even if S3 storage fails
         
         response_data = {
@@ -421,10 +423,9 @@ def process_meeting():
         
     except Exception as e:
         import traceback
-        print(f"ERROR in process_meeting: {str(e)}", flush=True)
-        print(f"Traceback: {traceback.format_exc()}", flush=True)
-        print("=" * 50, flush=True)
-        sys.stdout.flush()
+        logger.error(f"ERROR in process_meeting: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error("=" * 50)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/files/<path:filename>', methods=['GET'])
@@ -529,13 +530,12 @@ def delete_meeting(meeting_id):
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    print("=" * 50, flush=True)
-    print("Starting Flask server on port 5000", flush=True)
-    print("=" * 50, flush=True)
-    print(f"USE_BEDROCK env: {os.getenv('USE_BEDROCK')}", flush=True)
-    print(f"AWS_BEDROCK_API_KEY present: {bool(os.getenv('AWS_BEDROCK_API_KEY'))}", flush=True)
-    print(f"AWS_ACCESS_KEY_ID present: {bool(os.getenv('AWS_ACCESS_KEY_ID'))}", flush=True)
-    print("=" * 50, flush=True)
-    sys.stdout.flush()
+    logger.info("=" * 50)
+    logger.info("Starting Flask server on port 5000")
+    logger.info("=" * 50)
+    logger.info(f"USE_BEDROCK env: {os.getenv('USE_BEDROCK')}")
+    logger.info(f"AWS_BEDROCK_API_KEY present: {bool(os.getenv('AWS_BEDROCK_API_KEY'))}")
+    logger.info(f"AWS_ACCESS_KEY_ID present: {bool(os.getenv('AWS_ACCESS_KEY_ID'))}")
+    logger.info("=" * 50)
     app.run(debug=True, port=5000)
 

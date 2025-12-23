@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import { API_ENDPOINTS } from '@/config/api'
 
 interface FileUploadProps {
   onFileUploaded: (fileData: { file_path: string; filename: string; media_uri: string }) => void
@@ -39,7 +40,7 @@ export default function FileUpload({ onFileUploaded, onError }: FileUploadProps)
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('http://localhost:5000/api/upload', {
+      const response = await fetch(API_ENDPOINTS.UPLOAD, {
         method: 'POST',
         body: formData,
       })

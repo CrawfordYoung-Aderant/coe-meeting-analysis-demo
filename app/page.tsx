@@ -5,6 +5,7 @@ import FileUpload from '@/components/FileUpload'
 import AudioPlayer from '@/components/AudioPlayer'
 import MeetingSummary from '@/components/MeetingSummary'
 import RequirementsView from '@/components/RequirementsView'
+import { API_ENDPOINTS } from '@/config/api'
 
 export default function Home() {
   const [inputText, setInputText] = useState('')
@@ -41,7 +42,7 @@ export default function Home() {
         // Use file_path if available (for local files that need S3 upload)
         const filePath = uploadedFile?.file_path
         
-        const transcribeResponse = await fetch('http://localhost:5000/api/transcribe', {
+        const transcribeResponse = await fetch(API_ENDPOINTS.TRANSCRIBE, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -83,7 +84,7 @@ export default function Home() {
       }
 
       // Process meeting - always try to use Bedrock if available
-      const response = await fetch('http://localhost:5000/api/meeting/process', {
+      const response = await fetch(API_ENDPOINTS.MEETING_PROCESS, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -127,9 +128,7 @@ export default function Home() {
 
     const poll = async () => {
       try {
-        const url = s3Key 
-          ? `http://localhost:5000/api/transcribe/status/${jobName}?s3_key=${encodeURIComponent(s3Key)}`
-          : `http://localhost:5000/api/transcribe/status/${jobName}`
+        const url = API_ENDPOINTS.TRANSCRIBE_STATUS(jobName, s3Key)
         const response = await fetch(url)
         const data = await response.json()
 
@@ -143,7 +142,7 @@ export default function Home() {
           // Process the meeting with the transcribed text
           if (transcribedText) {
             try {
-              const processResponse = await fetch('http://localhost:5000/api/meeting/process', {
+              const processResponse = await fetch(API_ENDPOINTS.MEETING_PROCESS, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -208,14 +207,14 @@ export default function Home() {
       // If file_path exists, use local file endpoint
       if (uploadedFile.file_path) {
         const filename = uploadedFile.file_path.split('/').pop() || uploadedFile.filename
-        setAudioUrl(`http://localhost:5000/api/files/${filename}`)
+        setAudioUrl(API_ENDPOINTS.FILES(filename))
         return
       }
       
       // If no file_path but we have s3_key, get presigned URL from backend
       if (uploadedFile.s3_key) {
         try {
-          const response = await fetch(`http://localhost:5000/api/files/s3?key=${encodeURIComponent(uploadedFile.s3_key)}`)
+          const response = await fetch(API_ENDPOINTS.FILES_S3(uploadedFile.s3_key))
           if (response.ok) {
             const data = await response.json()
             setAudioUrl(data.url)

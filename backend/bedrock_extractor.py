@@ -6,7 +6,10 @@ import boto3
 import json
 import os
 import subprocess
+import logging
 from typing import Dict, List, Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 def get_bedrock_client():
     """Get Bedrock client using default IAM credential chain (AWS CLI, IAM roles, etc.)"""
@@ -42,7 +45,7 @@ def extract_with_bedrock(text: str, model_id: str = 'anthropic.claude-3-sonnet-2
     Returns:
         Structured data with action items, summary, etc.
     """
-    print(f"Bedrock extract_with_bedrock called with model: {model_id}")
+    logger.info(f"Bedrock extract_with_bedrock called with model: {model_id}")
     prompt = f"""Analyze the following meeting transcript and extract structured information in JSON format.
 
 Transcript:
@@ -81,8 +84,8 @@ Return ONLY valid JSON, no additional text."""
         client = get_bedrock_client()
         bedrock_api_key = get_bedrock_api_key()
         
-        print(f"Bedrock API key present: {bool(bedrock_api_key)}")
-        print(f"Using API key authentication: {bool(bedrock_api_key)}")
+        logger.debug(f"Bedrock API key present: {bool(bedrock_api_key)}")
+        logger.debug(f"Using API key authentication: {bool(bedrock_api_key)}")
         
         # Prepare the request body for Claude via Bedrock
         # Claude 3 uses a specific message format
@@ -120,13 +123,13 @@ Return ONLY valid JSON, no additional text."""
             
             # Use IAM credentials from default chain (AWS CLI, IAM role, etc.)
             # The API key is added as a header for Bedrock authorization
-            print("Using IAM auth from default credential chain + Bedrock API key")
+            logger.debug("Using IAM auth from default credential chain + Bedrock API key")
             
             # Get credentials from default chain for signing
             # Check for AWS_PROFILE env var first
             profile = os.getenv('AWS_PROFILE')
             if profile:
-                print(f"Using AWS profile: {profile}")
+                logger.debug(f"Using AWS profile: {profile}")
                 session = boto3.Session(profile_name=profile)
             else:
                 # Use default credential chain (same as AWS CLI)
@@ -140,16 +143,16 @@ Return ONLY valid JSON, no additional text."""
                 raise ValueError("No AWS credentials found. Please configure AWS CLI (aws configure) or use IAM role")
             
             profile_name = getattr(session, 'profile_name', None) or 'default'
-            print(f"Credentials found from profile: {profile_name}")
+            logger.debug(f"Credentials found from profile: {profile_name}")
             
             # Check if credentials have a session token (SSO/temporary credentials)
             creds_frozen = credentials.get_frozen_credentials()
             if creds_frozen.token:
-                print(f"Detected SSO/temporary credentials (session token present)")
-                print(f"Access key: {creds_frozen.access_key[:15]}...")
-                print("Note: SSO credentials can expire. If you see 'invalid token' errors:")
-                print("  1. Run 'aws sso login' to refresh SSO session")
-                print("  2. Or run 'aws sts get-caller-identity' to refresh credentials")
+                logger.debug(f"Detected SSO/temporary credentials (session token present)")
+                logger.debug(f"Access key: {creds_frozen.access_key[:15]}...")
+                logger.debug("Note: SSO credentials can expire. If you see 'invalid token' errors:")
+                logger.debug("  1. Run 'aws sso login' to refresh SSO session")
+                logger.debug("  2. Or run 'aws sts get-caller-identity' to refresh credentials")
                 
                 # Try to force refresh by creating a new session
                 # This helps with SSO credential caching issues
@@ -164,19 +167,19 @@ Return ONLY valid JSON, no additional text."""
                         refresh_frozen = refresh_creds.get_frozen_credentials()
                         # If access keys are different, credentials were refreshed
                         if refresh_frozen.access_key != creds_frozen.access_key:
-                            print("Credentials refreshed - using new credentials")
+                            logger.info("Credentials refreshed - using new credentials")
                             credentials = refresh_creds
                             creds_frozen = refresh_frozen
                 except Exception as refresh_err:
-                    print(f"Could not refresh credentials: {refresh_err}")
+                    logger.warning(f"Could not refresh credentials: {refresh_err}")
             else:
-                print(f"Using permanent credentials")
-                print(f"Access key: {creds_frozen.access_key[:15]}...")
+                logger.debug(f"Using permanent credentials")
+                logger.debug(f"Access key: {creds_frozen.access_key[:15]}...")
             
             # Note: We skip STS validation because sometimes it fails even when credentials work
             # AWS CLI might use different credential resolution than boto3
             # We'll try the Bedrock request directly - if credentials are invalid, it will fail there
-            print("Skipping credential validation - will validate during Bedrock request")
+            logger.debug("Skipping credential validation - will validate during Bedrock request")
             
             # Use requests with AWS SigV4 signing + Bedrock API key header
             import requests
@@ -188,8 +191,8 @@ Return ONLY valid JSON, no additional text."""
                 
                 # Get credentials for signing - use frozen credentials from session
                 creds = credentials.get_frozen_credentials()
-                print(f"Using credentials for signing (access key: {creds.access_key[:15]}...)")
-                print(f"Session token present: {bool(creds.token)}")
+                logger.debug(f"Using credentials for signing (access key: {creds.access_key[:15]}...)")
+                logger.debug(f"Session token present: {bool(creds.token)}")
                 
                 # Create auth with credentials (include session token if present)
                 auth = AWS4Auth(
@@ -207,28 +210,28 @@ Return ONLY valid JSON, no additional text."""
                     'x-api-key': bedrock_api_key  # Bedrock-specific API key
                 }
                 
-                print(f"Making signed request to Bedrock with API key header...")
+                logger.debug("Making signed request to Bedrock with API key header...")
                 response = requests.post(url, auth=auth, headers=headers, data=body, timeout=60)
                 
-                print(f"Response status: {response.status_code}")
+                logger.debug(f"Response status: {response.status_code}")
                 
                 if response.status_code == 200:
                     response_body = response.json()
-                    print(f"Bedrock response received successfully with API key")
+                    logger.info("Bedrock response received successfully with API key")
                 else:
-                    print(f"Error response: {response.text}")
+                    logger.warning(f"Error response: {response.text}")
                     # Fall back to boto3 (without API key) - might work if credentials are valid
-                    print("Falling back to boto3 without API key...")
+                    logger.info("Falling back to boto3 without API key...")
                     response = client.invoke_model(**request_params)
                     response_body = json.loads(response['body'].read())
             except ImportError:
-                print("requests-aws4auth not installed, using boto3...")
-                print("Note: API key may not be used with boto3 directly")
+                logger.warning("requests-aws4auth not installed, using boto3...")
+                logger.debug("Note: API key may not be used with boto3 directly")
                 # Try boto3 - it should use the same credentials as AWS CLI
                 response = client.invoke_model(**request_params)
                 response_body = json.loads(response['body'].read())
             except Exception as e:
-                print(f"Requests approach failed: {e}, trying boto3 with default credentials...")
+                logger.warning(f"Requests approach failed: {e}, trying boto3 with default credentials...")
                 # Last resort: use boto3 which should pick up AWS CLI credentials
                 response = client.invoke_model(**request_params)
                 response_body = json.loads(response['body'].read())
@@ -284,8 +287,8 @@ Return ONLY valid JSON, no additional text."""
     except Exception as e:
         import traceback
         error_message = str(e)
-        print(f"Error calling Bedrock: {error_message}")
-        print(f"Full traceback: {traceback.format_exc()}")
+        logger.error(f"Error calling Bedrock: {error_message}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         # Raise exception to let caller know Bedrock failed
         # The caller will handle fallback
         raise RuntimeError(f"Bedrock extraction failed: {error_message}") from e
@@ -320,7 +323,7 @@ def extract_meeting_data_with_bedrock(text: str) -> Tuple[Dict[str, Any], bool, 
             'participants': result.get('participants', []),
             'topics': result.get('topics', []),
             'next_steps': result.get('next_steps', []),
-            'duration_estimate': estimate_meeting_duration(text),
+            'duration_estimate': _estimate_meeting_duration(text),
             'entities': [],  # Could be enhanced
             'dates': []  # Could be enhanced
         }
@@ -331,15 +334,8 @@ def extract_meeting_data_with_bedrock(text: str) -> Tuple[Dict[str, Any], bool, 
         error_message = str(e)
         return ({}, bedrock_success, error_message)
 
-def estimate_meeting_duration(text: str) -> str:
-    """Estimate meeting duration based on word count"""
-    word_count = len(text.split())
-    estimated_minutes = max(5, word_count // 150)
-    
-    if estimated_minutes < 60:
-        return f"~{estimated_minutes} minutes"
-    else:
-        hours = estimated_minutes // 60
-        minutes = estimated_minutes % 60
-        return f"~{hours}h {minutes}m"
+def _estimate_meeting_duration(text: str) -> str:
+    """Estimate meeting duration based on word count (internal helper)"""
+    from text_parser import estimate_meeting_duration
+    return estimate_meeting_duration(text)
 

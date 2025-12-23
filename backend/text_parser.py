@@ -4,7 +4,10 @@ Extracts structured information from transcribed text
 """
 import re
 import json
+import logging
 from typing import Dict, List, Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 def parse_text_to_structured(text: str) -> Dict[str, Any]:
     """
@@ -193,28 +196,28 @@ def parse_meeting_text(text: str, use_bedrock: bool = False) -> Tuple[Dict[str, 
     # Use Bedrock if enabled and available
     if use_bedrock:
         try:
-            print(f"Attempting to use Bedrock for extraction...")
+            logger.info("Attempting to use Bedrock for extraction...")
             from bedrock_extractor import extract_meeting_data_with_bedrock
             meeting_data, bedrock_success, error_msg = extract_meeting_data_with_bedrock(text)
             
             if bedrock_success:
-                print(f"Bedrock extraction successful!")
+                logger.info("Bedrock extraction successful!")
                 bedrock_used = True
                 return (meeting_data, bedrock_used, bedrock_error)
             else:
                 # Bedrock was attempted but failed
                 bedrock_error = error_msg or "Bedrock extraction failed"
-                print(f"Bedrock extraction failed: {bedrock_error}")
-                print("Falling back to regex extraction")
+                logger.warning(f"Bedrock extraction failed: {bedrock_error}")
+                logger.info("Falling back to regex extraction")
         except ImportError as e:
             bedrock_error = f"Bedrock extractor import failed: {e}"
-            print(f"{bedrock_error}, falling back to regex")
+            logger.warning(f"{bedrock_error}, falling back to regex")
         except Exception as e:
             import traceback
             bedrock_error = f"Bedrock extraction failed: {str(e)}"
-            print(f"{bedrock_error}")
-            print(f"Traceback: {traceback.format_exc()}")
-            print("Falling back to regex extraction")
+            logger.error(f"{bedrock_error}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.info("Falling back to regex extraction")
     
     # Fallback to regex-based extraction
     meeting_data = {
