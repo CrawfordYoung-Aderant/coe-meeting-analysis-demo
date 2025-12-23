@@ -6,7 +6,7 @@ import boto3
 import json
 import os
 import subprocess
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 def get_bedrock_client():
     """Get Bedrock client using default IAM credential chain (AWS CLI, IAM roles, etc.)"""
@@ -283,12 +283,12 @@ Return ONLY valid JSON, no additional text."""
             
     except Exception as e:
         import traceback
-        print(f"Error calling Bedrock: {str(e)}")
+        error_message = str(e)
+        print(f"Error calling Bedrock: {error_message}")
         print(f"Full traceback: {traceback.format_exc()}")
-        # Fallback to regex-based extraction
-        print("Falling back to regex-based extraction")
-        from text_parser import parse_meeting_text
-        return parse_meeting_text(text, use_bedrock=False)
+        # Raise exception to let caller know Bedrock failed
+        # The caller will handle fallback
+        raise RuntimeError(f"Bedrock extraction failed: {error_message}") from e
 
 def extract_action_items_with_bedrock(text: str) -> List[Dict[str, Any]]:
     """
@@ -297,24 +297,39 @@ def extract_action_items_with_bedrock(text: str) -> List[Dict[str, Any]]:
     result = extract_with_bedrock(text)
     return result.get('action_items', [])
 
-def extract_meeting_data_with_bedrock(text: str) -> Dict[str, Any]:
+def extract_meeting_data_with_bedrock(text: str) -> Tuple[Dict[str, Any], bool, Optional[str]]:
     """
     Extract comprehensive meeting data using Bedrock
-    """
-    result = extract_with_bedrock(text)
     
-    # Ensure all expected fields are present
-    return {
-        'summary': result.get('summary', ''),
-        'action_items': result.get('action_items', []),
-        'key_decisions': result.get('key_decisions', []),
-        'participants': result.get('participants', []),
-        'topics': result.get('topics', []),
-        'next_steps': result.get('next_steps', []),
-        'duration_estimate': estimate_meeting_duration(text),
-        'entities': [],  # Could be enhanced
-        'dates': []  # Could be enhanced
-    }
+    Returns:
+        tuple: (result_dict, bedrock_success, error_message)
+        - result_dict: The extracted meeting data
+        - bedrock_success: True if Bedrock was used successfully, False otherwise
+        - error_message: Error message if Bedrock failed, None otherwise
+    """
+    try:
+        result = extract_with_bedrock(text)
+        bedrock_success = True
+        error_message = None
+        
+        # Ensure all expected fields are present
+        meeting_data = {
+            'summary': result.get('summary', ''),
+            'action_items': result.get('action_items', []),
+            'key_decisions': result.get('key_decisions', []),
+            'participants': result.get('participants', []),
+            'topics': result.get('topics', []),
+            'next_steps': result.get('next_steps', []),
+            'duration_estimate': estimate_meeting_duration(text),
+            'entities': [],  # Could be enhanced
+            'dates': []  # Could be enhanced
+        }
+        return (meeting_data, bedrock_success, error_message)
+    except Exception as e:
+        # Bedrock failed - return failure status
+        bedrock_success = False
+        error_message = str(e)
+        return ({}, bedrock_success, error_message)
 
 def estimate_meeting_duration(text: str) -> str:
     """Estimate meeting duration based on word count"""

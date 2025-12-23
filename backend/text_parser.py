@@ -4,7 +4,7 @@ Extracts structured information from transcribed text
 """
 import re
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Tuple
 
 def parse_text_to_structured(text: str) -> Dict[str, Any]:
     """
@@ -166,7 +166,7 @@ def generate_summary(text: str) -> str:
     
     return summary
 
-def parse_meeting_text(text: str, use_bedrock: bool = False) -> Dict[str, Any]:
+def parse_meeting_text(text: str, use_bedrock: bool = False) -> Tuple[Dict[str, Any], bool, Optional[str]]:
     """
     Parse meeting transcription with enhanced meeting-specific extraction
     
@@ -180,20 +180,39 @@ def parse_meeting_text(text: str, use_bedrock: bool = False) -> Dict[str, Any]:
     Args:
         text: Meeting transcript text
         use_bedrock: If True, use AWS Bedrock for extraction (more accurate)
+    
+    Returns:
+        tuple: (meeting_data, bedrock_used, bedrock_error)
+        - meeting_data: The extracted meeting data
+        - bedrock_used: True if Bedrock was successfully used, False otherwise
+        - bedrock_error: Error message if Bedrock failed, None otherwise
     """
+    bedrock_used = False
+    bedrock_error = None
+    
     # Use Bedrock if enabled and available
     if use_bedrock:
         try:
             print(f"Attempting to use Bedrock for extraction...")
             from bedrock_extractor import extract_meeting_data_with_bedrock
-            result = extract_meeting_data_with_bedrock(text)
-            print(f"Bedrock extraction successful!")
-            return result
+            meeting_data, bedrock_success, error_msg = extract_meeting_data_with_bedrock(text)
+            
+            if bedrock_success:
+                print(f"Bedrock extraction successful!")
+                bedrock_used = True
+                return (meeting_data, bedrock_used, bedrock_error)
+            else:
+                # Bedrock was attempted but failed
+                bedrock_error = error_msg or "Bedrock extraction failed"
+                print(f"Bedrock extraction failed: {bedrock_error}")
+                print("Falling back to regex extraction")
         except ImportError as e:
-            print(f"Bedrock extractor import failed: {e}, falling back to regex")
+            bedrock_error = f"Bedrock extractor import failed: {e}"
+            print(f"{bedrock_error}, falling back to regex")
         except Exception as e:
             import traceback
-            print(f"Bedrock extraction failed: {e}")
+            bedrock_error = f"Bedrock extraction failed: {str(e)}"
+            print(f"{bedrock_error}")
             print(f"Traceback: {traceback.format_exc()}")
             print("Falling back to regex extraction")
     
@@ -210,7 +229,7 @@ def parse_meeting_text(text: str, use_bedrock: bool = False) -> Dict[str, Any]:
         'dates': extract_dates(text)
     }
     
-    return meeting_data
+    return (meeting_data, bedrock_used, bedrock_error)
 
 def generate_meeting_summary(text: str) -> str:
     """Generate a comprehensive meeting summary"""

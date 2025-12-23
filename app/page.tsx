@@ -15,11 +15,13 @@ export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<{ file_path: string; filename: string; media_uri: string } | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [bedrockWarning, setBedrockWarning] = useState<string | null>(null)
   const [transcriptionStatus, setTranscriptionStatus] = useState<'idle' | 'uploading' | 'transcribing' | 'completed' | 'failed'>('idle')
 
   const handleFileUploaded = async (fileData: { file_path: string; filename: string; media_uri: string }) => {
     setUploadedFile(fileData)
     setError(null)
+    setBedrockWarning(null)
     setTranscriptionStatus('uploading')
     
     // Auto-start transcription
@@ -29,6 +31,7 @@ export default function Home() {
   const handleMeetingProcess = async (mediaUri?: string) => {
     setLoading(true)
     setError(null)
+    setBedrockWarning(null)
 
     try {
       let textToProcess = inputText
@@ -100,6 +103,11 @@ export default function Home() {
       setMeetingSummary(data.meeting_summary)
       setRequirements(data.requirements)
       
+      // Check for Bedrock warnings/errors
+      if (data.bedrock_warning || data.bedrock_error) {
+        setBedrockWarning(data.bedrock_warning || data.bedrock_error)
+      }
+      
       // Mark as completed if we processed directly from text
       if (!mediaUri) {
         setTranscriptionStatus('completed')
@@ -148,6 +156,11 @@ export default function Home() {
               const processData = await processResponse.json()
               setMeetingSummary(processData.meeting_summary)
               setRequirements(processData.requirements)
+              
+              // Check for Bedrock warnings/errors
+              if (processData.bedrock_warning || processData.bedrock_error) {
+                setBedrockWarning(processData.bedrock_warning || processData.bedrock_error)
+              }
             } catch (err) {
               setError(err instanceof Error ? err.message : 'Failed to process meeting')
             }
@@ -283,7 +296,29 @@ export default function Home() {
 
           {error && (
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-              {error}
+              <div className="flex items-start gap-2">
+                <svg className="h-5 w-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>{error}</span>
+              </div>
+            </div>
+          )}
+          
+          {bedrockWarning && (
+            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800">
+              <div className="flex items-start gap-2">
+                <svg className="h-5 w-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <div>
+                  <div className="font-semibold mb-1">Bedrock Extraction Warning</div>
+                  <div className="text-sm">{bedrockWarning}</div>
+                  <div className="text-xs mt-2 text-yellow-700">
+                    The system has automatically fallen back to regex-based extraction. Results may be less accurate than with Bedrock.
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>

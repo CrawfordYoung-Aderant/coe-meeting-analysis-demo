@@ -306,27 +306,37 @@ def process_meeting():
             return jsonify({'error': 'Text is required'}), 400
         
         # Parse meeting-specific content
-        meeting_data = parse_meeting_text(text, use_bedrock=use_bedrock)
+        meeting_data, bedrock_used, bedrock_error = parse_meeting_text(text, use_bedrock=use_bedrock)
         
         # Map to requirements format
         requirements = map_to_requirements_format(meeting_data)
         
-        extraction_method = 'bedrock' if use_bedrock else 'regex'
+        extraction_method = 'bedrock' if bedrock_used else 'regex'
         
         print(f"Extraction completed using: {extraction_method}", flush=True)
+        if bedrock_error:
+            print(f"Bedrock error: {bedrock_error}", flush=True)
         print(f"Meeting summary keys: {list(meeting_data.keys()) if meeting_data else 'None'}", flush=True)
         print(f"Number of action items: {len(meeting_data.get('action_items', []))}", flush=True)
         print(f"Number of requirements: {len(requirements)}", flush=True)
         print("=" * 50, flush=True)
         sys.stdout.flush()
         
-        return jsonify({
+        response_data = {
             'success': True,
             'original_text': text,
             'meeting_summary': meeting_data,
             'requirements': requirements,
-            'extraction_method': extraction_method
-        }), 200
+            'extraction_method': extraction_method,
+            'bedrock_used': bedrock_used,
+        }
+        
+        # Include Bedrock error if it occurred
+        if bedrock_error:
+            response_data['bedrock_error'] = bedrock_error
+            response_data['bedrock_warning'] = f"Bedrock extraction failed. Using fallback method. Error: {bedrock_error}"
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
         import traceback
