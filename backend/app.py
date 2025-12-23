@@ -9,6 +9,14 @@ from datetime import datetime
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from text_parser import parse_text_to_structured, parse_meeting_text, map_to_requirements_format
+from s3_storage import (
+    store_meeting_data, 
+    retrieve_meeting_data, 
+    list_meetings, 
+    generate_meeting_id,
+    get_presigned_url,
+    delete_meeting_data
+)
 import tempfile
 
 # Force stdout to be unbuffered so prints show immediately
@@ -88,6 +96,7 @@ def transcribe():
         if 'audio_url' in data or 'file_path' in data:
             # Check if it's a local file path (needs S3 upload) or S3 URI
             audio_url = data.get('audio_url') or data.get('file_path', '')
+            s3_key = data.get('s3_key')  # S3 key if already uploaded
             
             # If it's a local file path, upload to S3 first
             if not audio_url.startswith('s3://'):
@@ -99,11 +108,18 @@ def transcribe():
                 
                 # Upload local file to S3
                 if os.path.exists(audio_url):
-                    s3_key = f"meetings/{uuid.uuid4()}_{os.path.basename(audio_url)}"
+                    if not s3_key:
+                        s3_key = f"meetings/{uuid.uuid4()}_{os.path.basename(audio_url)}"
                     s3_client.upload_file(audio_url, bucket_name, s3_key)
                     audio_url = f"s3://{bucket_name}/{s3_key}"
                 else:
                     return jsonify({'error': 'File not found'}), 404
+            elif not s3_key:
+                # Extract S3 key from S3 URI
+                if audio_url.startswith('s3://'):
+                    parts = audio_url.replace('s3://', '').split('/', 1)
+                    if len(parts) == 2:
+                        s3_key = parts[1]
             
             job_name = f"transcribe-{uuid.uuid4()}"
             
@@ -126,11 +142,17 @@ def transcribe():
                 LanguageCode=data.get('language_code', 'en-US')
             )
             
-            return jsonify({
+            result = {
                 'success': True,
                 'job_name': job_name,
                 'status': response['TranscriptionJob']['TranscriptionJobStatus']
-            }), 200
+            }
+            
+            # Include S3 key for later storage
+            if s3_key:
+                result['s3_key'] = s3_key
+            
+            return jsonify(result), 200
         
         return jsonify({'error': 'Either text or audio_url/file_path must be provided'}), 400
         
@@ -143,6 +165,9 @@ def get_transcription_status(job_name):
     Get transcription job status and results
     """
     try:
+        # Get S3 key from query parameter if provided
+        s3_key = request.args.get('s3_key')
+        
         response = transcribe_client.get_transcription_job(
             TranscriptionJobName=job_name
         )
@@ -170,6 +195,10 @@ def get_transcription_status(job_name):
                 result['transcribed_text'] = transcribed_text
                 result['structured_output'] = structured_output
                 result['original_text'] = transcribed_text
+                
+                # Include S3 key if provided
+                if s3_key:
+                    result['s3_key'] = s3_key
         
         elif status == 'FAILED':
             result['error'] = job.get('FailureReason', 'Transcription failed')
@@ -206,6 +235,7 @@ def parse_text():
 def upload_file():
     """
     Upload audio/video file for transcription
+    Optionally stores directly to S3 (skip local storage)
     """
     try:
         if 'file' not in request.files:
@@ -219,16 +249,41 @@ def upload_file():
         if not allowed_file(file.filename):
             return jsonify({'error': 'File type not allowed'}), 400
         
-        # Save file temporarily
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, f"{uuid.uuid4()}_{filename}")
-        file.save(filepath)
-        
-        # Upload to S3 (required for AWS Transcribe)
         bucket_name = os.getenv('S3_BUCKET_NAME')
+        if not bucket_name:
+            return jsonify({
+                'error': 'S3_BUCKET_NAME not configured. AWS Transcribe requires files to be in S3. Please set S3_BUCKET_NAME environment variable in your .env file.',
+                'hint': 'Add S3_BUCKET_NAME=your-bucket-name to your .env file'
+            }), 400
+        
+        filename = secure_filename(file.filename)
         s3_key = f"meetings/{uuid.uuid4()}_{filename}"
         
-        if bucket_name:
+        # Check if we should skip local storage (default: True for production)
+        skip_local = os.getenv('SKIP_LOCAL_STORAGE', 'true').lower() == 'true'
+        
+        if skip_local:
+            # Upload directly to S3 without saving locally
+            try:
+                # Use upload_fileobj for streaming upload (more memory efficient)
+                s3_client.upload_fileobj(
+                    file,
+                    bucket_name,
+                    s3_key,
+                    ExtraArgs={'ContentType': file.content_type or 'audio/mpeg'}
+                )
+                media_uri = f"s3://{bucket_name}/{s3_key}"
+                filepath = None  # No local file
+            except Exception as e:
+                return jsonify({
+                    'error': f'Failed to upload to S3: {str(e)}. Please check your S3 configuration and permissions.'
+                }), 500
+        else:
+            # Save file locally first (for development/testing)
+            filepath = os.path.join(UPLOAD_FOLDER, f"{uuid.uuid4()}_{filename}")
+            file.save(filepath)
+            
+            # Upload to S3 (required for AWS Transcribe)
             try:
                 s3_client.upload_file(filepath, bucket_name, s3_key)
                 media_uri = f"s3://{bucket_name}/{s3_key}"
@@ -236,17 +291,12 @@ def upload_file():
                 return jsonify({
                     'error': f'Failed to upload to S3: {str(e)}. Please check your S3 configuration and permissions.'
                 }), 500
-        else:
-            # AWS Transcribe requires files to be in S3
-            return jsonify({
-                'error': 'S3_BUCKET_NAME not configured. AWS Transcribe requires files to be in S3. Please set S3_BUCKET_NAME environment variable in your .env file.',
-                'hint': 'Add S3_BUCKET_NAME=your-bucket-name to your .env file'
-            }), 400
         
         return jsonify({
             'success': True,
-            'file_path': filepath,
+            'file_path': filepath,  # None if skip_local=True
             'media_uri': media_uri,
+            's3_key': s3_key,
             'filename': filename,
             'message': 'File uploaded successfully'
         }), 200
@@ -322,6 +372,33 @@ def process_meeting():
         print("=" * 50, flush=True)
         sys.stdout.flush()
         
+        # Store in S3 if audio S3 key is provided
+        meeting_id = None
+        store_in_s3 = os.getenv('STORE_IN_S3', 'true').lower() == 'true'
+        audio_s3_key = data.get('audio_s3_key') or data.get('s3_key')
+        
+        if store_in_s3 and audio_s3_key:
+            try:
+                meeting_id = generate_meeting_id()
+                metadata = {
+                    'filename': data.get('filename', 'unknown'),
+                    'extraction_method': extraction_method,
+                    'bedrock_used': bedrock_used
+                }
+                
+                stored_keys = store_meeting_data(
+                    meeting_id=meeting_id,
+                    audio_s3_key=audio_s3_key,
+                    transcription_text=text,
+                    meeting_summary=meeting_data,
+                    requirements=requirements,
+                    metadata=metadata
+                )
+                print(f"Meeting data stored in S3 with ID: {meeting_id}", flush=True)
+            except Exception as e:
+                print(f"Warning: Failed to store in S3: {e}", flush=True)
+                # Continue even if S3 storage fails
+        
         response_data = {
             'success': True,
             'original_text': text,
@@ -330,6 +407,10 @@ def process_meeting():
             'extraction_method': extraction_method,
             'bedrock_used': bedrock_used,
         }
+        
+        # Include meeting ID if stored in S3
+        if meeting_id:
+            response_data['meeting_id'] = meeting_id
         
         # Include Bedrock error if it occurred
         if bedrock_error:
@@ -350,6 +431,7 @@ def process_meeting():
 def get_file(filename):
     """
     Serve uploaded files for playback
+    Falls back to S3 if file not found locally
     """
     try:
         # Security: ensure filename doesn't contain path traversal
@@ -359,7 +441,90 @@ def get_file(filename):
         if os.path.exists(filepath) and os.path.isfile(filepath):
             from flask import send_file
             return send_file(filepath)
+        
+        # Try to get from S3
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        if bucket_name:
+            # Look for file in meetings/ prefix
+            s3_key = f"meetings/{safe_filename}"
+            try:
+                # Generate presigned URL for secure access
+                url = get_presigned_url(s3_key, expiration=3600)
+                return jsonify({'url': url}), 200
+            except:
+                pass
+        
         return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/files/s3', methods=['GET'])
+def get_s3_presigned_url():
+    """
+    Get presigned URL for S3 file
+    """
+    try:
+        s3_key = request.args.get('key')
+        if not s3_key:
+            return jsonify({'error': 'S3 key parameter required'}), 400
+        
+        url = get_presigned_url(s3_key, expiration=3600)
+        return jsonify({'url': url}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/meetings', methods=['GET'])
+def list_all_meetings():
+    """
+    List all stored meetings
+    """
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        meetings = list_meetings(limit=limit)
+        return jsonify({
+            'success': True,
+            'meetings': meetings,
+            'count': len(meetings)
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/meetings/<meeting_id>', methods=['GET'])
+def get_meeting(meeting_id):
+    """
+    Retrieve a specific meeting by ID
+    """
+    try:
+        meeting_data = retrieve_meeting_data(meeting_id)
+        
+        # Generate presigned URL for audio if available
+        if meeting_data.get('audio_s3_key'):
+            try:
+                audio_url = get_presigned_url(meeting_data['audio_s3_key'], expiration=3600)
+                meeting_data['audio_url'] = audio_url
+            except:
+                pass
+        
+        return jsonify({
+            'success': True,
+            'meeting': meeting_data
+        }), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/meetings/<meeting_id>', methods=['DELETE'])
+def delete_meeting(meeting_id):
+    """
+    Delete a meeting and all its associated data
+    """
+    try:
+        delete_meeting_data(meeting_id)
+        return jsonify({
+            'success': True,
+            'message': f'Meeting {meeting_id} deleted successfully'
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

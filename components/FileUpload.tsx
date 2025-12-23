@@ -79,7 +79,7 @@ export default function FileUpload({ onFileUploaded, onError }: FileUploadProps)
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
-        className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-indigo-400 transition-colors bg-gray-50"
+        className="border-2 border-dashed border-neutral-lighter rounded-lg p-8 text-center hover:border-primary-red transition-colors bg-neutral-lightest"
       >
         <input
           ref={fileInputRef}
@@ -92,7 +92,7 @@ export default function FileUpload({ onFileUploaded, onError }: FileUploadProps)
         <label htmlFor="file-upload" className="cursor-pointer">
           <div className="flex flex-col items-center">
             <svg
-              className="w-12 h-12 text-gray-400 mb-4"
+              className="w-12 h-12 text-neutral-medium mb-4"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -105,18 +105,18 @@ export default function FileUpload({ onFileUploaded, onError }: FileUploadProps)
               />
             </svg>
             {uploading ? (
-              <div className="text-indigo-600 font-medium">Uploading...</div>
+              <div className="text-secondary-blue font-copy font-medium">Uploading...</div>
             ) : uploadedFile ? (
               <div>
-                <div className="text-green-600 font-medium mb-2">✓ {uploadedFile.filename}</div>
-                <div className="text-sm text-gray-500">Click to upload a different file</div>
+                <div className="text-secondary-blue font-copy font-medium mb-2">✓ {uploadedFile.filename}</div>
+                <div className="text-sm font-copy text-neutral-medium">Click to upload a different file</div>
               </div>
             ) : (
               <div>
-                <div className="text-gray-700 font-medium mb-2">
+                <div className="text-neutral-dark font-copy font-medium mb-2">
                   Drop audio/video file here or click to browse
                 </div>
-                <div className="text-sm text-gray-500">
+                <div className="text-sm font-copy text-neutral-medium">
                   Supports: MP3, WAV, M4A, FLAC, OGG, MP4, WebM (max 100MB)
                 </div>
               </div>

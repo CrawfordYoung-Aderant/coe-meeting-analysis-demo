@@ -1,7 +1,6 @@
 'use client'
 
-import { useState } from 'react'
-import ComparisonView from '@/components/ComparisonView'
+import { useState, useEffect } from 'react'
 import FileUpload from '@/components/FileUpload'
 import AudioPlayer from '@/components/AudioPlayer'
 import MeetingSummary from '@/components/MeetingSummary'
@@ -12,7 +11,7 @@ export default function Home() {
   const [transcribedText, setTranscribedText] = useState('')
   const [meetingSummary, setMeetingSummary] = useState<any>(null)
   const [requirements, setRequirements] = useState<any[]>([])
-  const [uploadedFile, setUploadedFile] = useState<{ file_path: string; filename: string; media_uri: string } | null>(null)
+  const [uploadedFile, setUploadedFile] = useState<{ file_path?: string; filename: string; media_uri: string; s3_key?: string } | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [bedrockWarning, setBedrockWarning] = useState<string | null>(null)
@@ -50,6 +49,7 @@ export default function Home() {
           body: JSON.stringify({
             audio_url: mediaUri.startsWith('s3://') ? mediaUri : undefined,
             file_path: filePath && !mediaUri.startsWith('s3://') ? filePath : undefined,
+            s3_key: uploadedFile?.s3_key || (mediaUri.startsWith('s3://') ? mediaUri.split('/').slice(-2).join('/') : undefined),
             media_format: mediaUri.split('.').pop()?.toLowerCase() || filePath?.split('.').pop()?.toLowerCase() || 'mp3',
           }),
         })
@@ -66,7 +66,7 @@ export default function Home() {
         } else if (transcribeData.job_name) {
           // Poll for transcription
           setTranscriptionStatus('transcribing')
-          pollAndProcessMeeting(transcribeData.job_name)
+          pollAndProcessMeeting(transcribeData.job_name, transcribeData.s3_key || uploadedFile?.s3_key)
           return
         } else {
           throw new Error('Failed to start transcription job')
@@ -90,7 +90,9 @@ export default function Home() {
         },
         body: JSON.stringify({ 
           text: textToProcess,
-          use_bedrock: true  // Explicitly request Bedrock extraction
+          use_bedrock: true,  // Explicitly request Bedrock extraction
+          audio_s3_key: uploadedFile?.s3_key,
+          filename: uploadedFile?.filename
         }),
       })
 
@@ -119,13 +121,16 @@ export default function Home() {
     }
   }
 
-  const pollAndProcessMeeting = async (jobName: string) => {
+  const pollAndProcessMeeting = async (jobName: string, s3Key?: string) => {
     const maxAttempts = 30
     let attempts = 0
 
     const poll = async () => {
       try {
-        const response = await fetch(`http://localhost:5000/api/transcribe/status/${jobName}`)
+        const url = s3Key 
+          ? `http://localhost:5000/api/transcribe/status/${jobName}?s3_key=${encodeURIComponent(s3Key)}`
+          : `http://localhost:5000/api/transcribe/status/${jobName}`
+        const response = await fetch(url)
         const data = await response.json()
 
         if (data.status === 'COMPLETED') {
@@ -145,7 +150,9 @@ export default function Home() {
                 },
                 body: JSON.stringify({ 
                   text: transcribedText,
-                  use_bedrock: true  // Explicitly request Bedrock extraction
+                  use_bedrock: true,  // Explicitly request Bedrock extraction
+                  audio_s3_key: data.s3_key || uploadedFile?.s3_key,
+                  filename: uploadedFile?.filename
                 }),
               })
 
@@ -188,42 +195,73 @@ export default function Home() {
     poll()
   }
 
-  const getAudioUrl = () => {
-    if (!uploadedFile) return null
-    const filename = uploadedFile.file_path.split('/').pop() || uploadedFile.filename
-    return `http://localhost:5000/api/files/${filename}`
-  }
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+
+  // Update audio URL when uploadedFile changes
+  useEffect(() => {
+    const updateAudioUrl = async () => {
+      if (!uploadedFile) {
+        setAudioUrl(null)
+        return
+      }
+      
+      // If file_path exists, use local file endpoint
+      if (uploadedFile.file_path) {
+        const filename = uploadedFile.file_path.split('/').pop() || uploadedFile.filename
+        setAudioUrl(`http://localhost:5000/api/files/${filename}`)
+        return
+      }
+      
+      // If no file_path but we have s3_key, get presigned URL from backend
+      if (uploadedFile.s3_key) {
+        try {
+          const response = await fetch(`http://localhost:5000/api/files/s3?key=${encodeURIComponent(uploadedFile.s3_key)}`)
+          if (response.ok) {
+            const data = await response.json()
+            setAudioUrl(data.url)
+            return
+          }
+        } catch (err) {
+          console.error('Failed to get presigned URL:', err)
+        }
+      }
+      
+      setAudioUrl(null)
+    }
+
+    updateAudioUrl()
+  }, [uploadedFile])
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-8 px-4">
+    <main className="min-h-screen bg-gradient-to-br from-neutral-lightest to-neutral-lighter py-8 px-4">
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">
+          <h1 className="text-4xl font-headline font-light text-primary-dark mb-2">
             Meeting Analysis & Requirements Generator
           </h1>
-          <p className="text-gray-600">
+          <p className="font-copy font-light text-neutral-dark">
             Upload meeting audio or paste transcript to generate summaries and structured requirements
           </p>
         </div>
 
-        <div className="bg-white rounded-lg shadow-xl p-6 mb-6">
+        <div className="bg-primary-white rounded-lg shadow-xl p-6 mb-6">
           <div className="space-y-6">
             {/* File Upload */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-copy font-medium text-neutral-dark mb-2">
                 Upload Meeting Audio/Video
               </label>
               <FileUpload onFileUploaded={handleFileUploaded} onError={setError} />
             </div>
 
             {/* Audio Player */}
-            {uploadedFile && getAudioUrl() && (
-              <AudioPlayer src={getAudioUrl()!} filename={uploadedFile.filename} />
+            {uploadedFile && audioUrl && (
+              <AudioPlayer src={audioUrl} filename={uploadedFile.filename} />
             )}
 
             {/* Text Input (for pasting or manual entry) */}
             <div>
-              <label htmlFor="meeting-text" className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="meeting-text" className="block text-sm font-copy font-medium text-neutral-dark mb-2">
                 Or Paste Meeting Transcript
               </label>
               <textarea
@@ -231,46 +269,46 @@ export default function Home() {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 placeholder="Paste meeting transcript here or upload audio file above..."
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                className="w-full px-4 py-3 border border-neutral-lighter rounded-lg focus:ring-2 focus:ring-primary-red focus:border-transparent resize-none font-copy"
                 rows={6}
               />
             </div>
 
             {/* Transcription Status Indicator */}
             {transcriptionStatus !== 'idle' && (
-              <div className="p-4 rounded-lg border-2 border-dashed">
+              <div className="p-4 rounded-lg border-2 border-dashed border-neutral-lighter">
                 {transcriptionStatus === 'uploading' && (
-                  <div className="flex items-center gap-3 text-blue-600">
+                  <div className="flex items-center gap-3 text-secondary-blue">
                     <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    <span className="font-medium">Uploading file to S3...</span>
+                    <span className="font-copy font-medium">Uploading file to S3...</span>
                   </div>
                 )}
                 {transcriptionStatus === 'transcribing' && (
-                  <div className="flex items-center gap-3 text-indigo-600">
+                  <div className="flex items-center gap-3 text-secondary-blue">
                     <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    <span className="font-medium">Transcribing audio... This may take a few minutes.</span>
+                    <span className="font-copy font-medium">Transcribing audio... This may take a few minutes.</span>
                   </div>
                 )}
                 {transcriptionStatus === 'completed' && (
-                  <div className="flex items-center gap-3 text-green-600">
+                  <div className="flex items-center gap-3 text-secondary-blue">
                     <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
-                    <span className="font-medium">Transcription completed! Meeting processed.</span>
+                    <span className="font-copy font-medium">Transcription completed! Meeting processed.</span>
                   </div>
                 )}
                 {transcriptionStatus === 'failed' && (
-                  <div className="flex items-center gap-3 text-red-600">
+                  <div className="flex items-center gap-3 text-secondary-red">
                     <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
-                    <span className="font-medium">Transcription failed. Please try again.</span>
+                    <span className="font-copy font-medium">Transcription failed. Please try again.</span>
                   </div>
                 )}
               </div>
@@ -285,7 +323,7 @@ export default function Home() {
                 (!inputText.trim() && !uploadedFile) ||
                 (uploadedFile && transcriptionStatus !== 'completed' && !inputText.trim())
               }
-              className="w-full bg-indigo-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full bg-primary-red text-primary-white px-6 py-3 rounded-lg font-copy font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               {loading ? 'Processing Meeting...' : 
                transcriptionStatus === 'transcribing' || transcriptionStatus === 'uploading' ? 
@@ -295,26 +333,26 @@ export default function Home() {
           </div>
 
           {error && (
-            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+            <div className="mt-4 p-4 bg-red-50 border border-secondary-red/30 rounded-lg text-secondary-red">
               <div className="flex items-start gap-2">
                 <svg className="h-5 w-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                <span>{error}</span>
+                <span className="font-copy">{error}</span>
               </div>
             </div>
           )}
           
           {bedrockWarning && (
-            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800">
+            <div className="mt-4 p-4 bg-secondary-yellow/10 border border-secondary-yellow/30 rounded-lg text-neutral-dark">
               <div className="flex items-start gap-2">
                 <svg className="h-5 w-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
                 <div>
-                  <div className="font-semibold mb-1">Bedrock Extraction Warning</div>
-                  <div className="text-sm">{bedrockWarning}</div>
-                  <div className="text-xs mt-2 text-yellow-700">
+                  <div className="font-copy font-semibold mb-1">Bedrock Extraction Warning</div>
+                  <div className="text-sm font-copy">{bedrockWarning}</div>
+                  <div className="text-xs mt-2 font-copy text-neutral-medium">
                     The system has automatically fallen back to regex-based extraction. Results may be less accurate than with Bedrock.
                   </div>
                 </div>
@@ -328,21 +366,15 @@ export default function Home() {
           <div className="space-y-6">
             <MeetingSummary summary={meetingSummary} />
             {requirements.length > 0 && <RequirementsView requirements={requirements} />}
-            {transcribedText && inputText && inputText !== transcribedText && (
-              <ComparisonView
-                originalText={inputText}
-                transcribedText={transcribedText}
-              />
-            )}
-            {transcribedText && !inputText && (
-              <div className="bg-white rounded-lg shadow-xl p-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">Transcribed Text</h2>
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-h-96 overflow-y-auto">
-                  <p className="text-gray-800 whitespace-pre-wrap text-sm leading-relaxed">
+            {transcribedText && (
+              <div className="bg-primary-white rounded-lg shadow-xl p-6">
+                <h2 className="text-2xl font-headline font-light text-primary-dark mb-4">Transcribed Text</h2>
+                <div className="bg-secondary-blue/10 border border-secondary-blue/30 rounded-lg p-4 max-h-96 overflow-y-auto">
+                  <p className="text-neutral-dark whitespace-pre-wrap text-sm leading-relaxed font-copy">
                     {transcribedText}
                   </p>
                 </div>
-                <div className="mt-2 text-xs text-gray-500">
+                <div className="mt-2 text-xs font-copy text-neutral-medium">
                   {transcribedText.split(/\s+/).length} words
                 </div>
               </div>
